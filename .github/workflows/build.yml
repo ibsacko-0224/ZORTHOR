@@ -1,0 +1,56 @@
+name: Build HexSite
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Localiser le projet
+        id: proj
+        run: |
+          if [ ! -f package.json ] && [ -f HexSite.zip ]; then unzip -q HexSite.zip -d projet; fi
+          P="$(find . -maxdepth 3 -name package.json -not -path '*/node_modules/*' | head -1)"
+          if [ -z "$P" ]; then echo "::error::package.json introuvable (ni dans le dépôt, ni dans HexSite.zip)."; exit 1; fi
+          echo "dir=$(dirname "$P")" >> "$GITHUB_OUTPUT"
+
+      - name: Installer
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: npm install --no-audit --no-fund
+
+      - name: Types
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: npm run typecheck
+
+      - name: Tests (unitaires + bout en bout)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: npm test
+
+      - name: Compilation
+        working-directory: ${{ steps.proj.outputs.dir }}
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+
+      - name: Démarrage réel du serveur de production
+        working-directory: ${{ steps.proj.outputs.dir }}
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          DATA_DIR: ${{ runner.temp }}/hexsite-data
+          PUBLISH_DIR: ${{ runner.temp }}/hexsite-exports
+        run: |
+          npm run start > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:3000/api/health && break; sleep 1; done
+          curl -fsS http://127.0.0.1:3000/api/health
+          curl -fsS -X POST http://127.0.0.1:3000/api/samples
+          curl -fsS http://127.0.0.1:3000/ -o /dev/null
+          echo "✓ le serveur répond"
